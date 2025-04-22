@@ -36,7 +36,7 @@
 ## Installation
 
 ```bash
-git clone https://github.com/<your_org>/ail-general-feeder.git
+git clone https://github.com/davidcbbc/ail-general-feeder.git
 cd ail-general-feeder
 pip install -r requirements.txt
 ```
