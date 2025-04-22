@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys
-from task import process_file  # Import the celery task
+from worker import process_file  # Import the celery task
 
 def main():
     if len(sys.argv) < 2:

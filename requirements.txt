@@ -4,3 +4,5 @@ celery
 pika
 amqp
 python-magic
+rarfile
+patool

@@ -1,3 +1,8 @@
 
 .venv
-
+Leaks_Storage
+Leaks_Storage/*
+Working_Folder
+Working_Folder/*
+__pycache__/*
+__pycache__

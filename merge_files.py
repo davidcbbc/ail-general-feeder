@@ -18,7 +18,6 @@ Requires:  Python ≥ 3.9 and the package *python‑magic*
 
 from __future__ import annotations
 
-import argparse
 import shutil
 import sys
 import threading
@@ -65,15 +64,11 @@ def append_if_text(fpath: Path, merged_path: Path, lock: threading.Lock) -> None
                 merged.write("\n")          # separator between files
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Flatten directory, merge text files, leave only merged.txt.")
-    parser.add_argument("directory", type=Path, help="Path to the target directory")
-    args = parser.parse_args()
-
-    target_dir: Path = args.directory.expanduser().resolve()
+def merge(target_dir):
+    """Flatten directory, merge text files, leave only merged.txt."""
 
     if not target_dir.is_dir():
-        sys.exit(f"Error: '{target_dir}' is not a valid directory.")
+        sys.exit(f"[ERROR]'{target_dir}' is not a valid directory.")
 
     # ------------------------------------------------------------------ #
     # 1. Move every file from sub‑dirs up one level                       #
@@ -116,5 +111,3 @@ def main() -> None:
     print(f"✅  Done. All text files merged into {merged_path}.")
 
 
-if __name__ == "__main__":
-    main()

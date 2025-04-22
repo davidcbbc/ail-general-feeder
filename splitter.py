@@ -1,23 +1,24 @@
-#!/usr/bin/env python3
 """
-Single‑file AIL feeder (glob version, **fixed pattern**)
--------------------------------------------------------
-`Filesplit` names chunks as `original_stem_<index>.ext` (e.g. `big_leak_0.txt`).
-This revision adjusts the glob and numeric‑sort logic accordingly.
+splitter library
 
-Example:
-    python single_file_ail_feeder.py \
-        --file /data/big_leak.txt \
-        --chunk-size 5000000 \
-        --api-key ABCDEF123456 \
-        --ail-url https://ail.example.org \
-        --uuid 123e4567-e89b-12d3-a456-426614174000 \
-        --name "Corporate Feeder" \
-        --wait 0.5
+Provides a programmatic interface to split a large file into chunks
+and send each chunk to an AIL instance via its HTTP API.
+
+Usage:
+    from single_file_ail_feeder import merge
+
+    merge(
+        file="/data/big_leak.txt",
+        chunk_size=5000000,
+        api_key="ABCDEF123456",
+        ail_url="https://ail.example.org",
+        uuid="123e4567-e89b-12d3-a456-426614174000",
+        name="LeakFeeder",
+        wait=0.5,
+    )
 """
 from __future__ import annotations
 
-import argparse
 import base64
 import gzip
 import hashlib
@@ -27,18 +28,20 @@ import time
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
-from typing import List
+from typing import List, Optional
 
 import requests
 from fsplit.filesplit import Filesplit
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
-# ---------------------------------------------------------------------------
-# AIL interaction helpers
-# ---------------------------------------------------------------------------
 
 def check_ail(ail_url: str, api_key: str) -> bool:
-    """Return *True* if the AIL instance answers with *pong*."""
+    """
+    Return True if the AIL instance is reachable and responds with pong.
+
+    :param ail_url: Base URL of the AIL instance (no trailing slash)
+    :param api_key: Authentication token
+    """
     try:
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
         resp = requests.get(
@@ -48,15 +51,28 @@ def check_ail(ail_url: str, api_key: str) -> bool:
             verify=False,
         )
         return resp.json().get("status") == "pong"
-    except Exception as exc:
-        print(f"[check_ail] Could not reach AIL: {exc}")
+    except Exception:
         return False
 
 
-def publish_chunk(cfg: SimpleNamespace, leak_path: str, chunk_path: str, sha256: str, lines: List[str]) -> bool:
-    """Compress + encode the chunk and submit it to AIL."""
-    comp_b64 = base64.b64encode(gzip.compress("".join(lines).encode("utf-8"))).decode()
+def publish_chunk(
+    cfg: SimpleNamespace,
+    leak_path: str,
+    chunk_path: str,
+    sha256: str,
+    lines: List[str],
+) -> bool:
+    """
+    Compress, base64-encode, and send a chunk to the AIL API.
 
+    :param cfg:        Configuration namespace (name, uuid, api_key, ail_url)
+    :param leak_path:  Original file path
+    :param chunk_path: Chunk file path
+    :param sha256:     SHA256 digest of the chunk
+    :param lines:      Lines of text in the chunk
+    :return:           True on success, False on failure
+    """
+    comp_b64 = base64.b64encode(gzip.compress("".join(lines).encode("utf-8"))).decode()
     payload = {
         "source": cfg.name,
         "source-uuid": cfg.uuid,
@@ -68,7 +84,6 @@ def publish_chunk(cfg: SimpleNamespace, leak_path: str, chunk_path: str, sha256:
         "data-sha256": sha256,
         "data": comp_b64,
     }
-
     url = f"{cfg.ail_url}/import/json/item"
     try:
         resp = requests.post(
@@ -80,31 +95,28 @@ def publish_chunk(cfg: SimpleNamespace, leak_path: str, chunk_path: str, sha256:
         )
         data = resp.json()
         if data.get("status") == "success":
-            print(f"[+] {os.path.basename(chunk_path)} uploaded successfully")
             os.remove(chunk_path)
             return True
-        print(f"[!] Upload failed for {chunk_path}: {data.get('reason')}")
         return False
-    except Exception as exc:
-        print(f"[publish_chunk] Error while pushing {chunk_path}: {exc}")
+    except Exception:
         return False
 
-# ---------------------------------------------------------------------------
-# Core workflow
-# ---------------------------------------------------------------------------
 
 def glob_chunk_files(dir_path: str, leak_path: str) -> List[str]:
-    """Return chunk paths (e.g. `big_leak_0.txt`) sorted by the numeric index."""
-    stem = Path(leak_path).stem      # "big_leak"
-    suffix = Path(leak_path).suffix  # ".txt"
-    pattern = f"{stem}_*{suffix}"    # "big_leak_*\.txt"
+    """
+    Find all chunk files matching the pattern `<stem>_<index><suffix>` and return
+    them sorted by numeric index.
 
+    :param dir_path:  Directory to search
+    :param leak_path: Original file path used to derive stem and suffix
+    """
+    stem = Path(leak_path).stem
+    suffix = Path(leak_path).suffix
+    pattern = f"{stem}_*{suffix}"
     paths = list(Path(dir_path).glob(pattern))
-
-    # Sort by the digits between the underscore and the extension
     idx_re = re.compile(rf"_(\d+){re.escape(suffix)}$")
 
-    def numeric_key(p: Path):
+    def numeric_key(p: Path) -> int:
         m = idx_re.search(p.name)
         return int(m.group(1)) if m else -1
 
@@ -113,11 +125,16 @@ def glob_chunk_files(dir_path: str, leak_path: str) -> List[str]:
 
 
 def split_and_send(cfg: SimpleNamespace, leak_path: str) -> None:
+    """
+    Split the file at `leak_path` into chunks of size `cfg.chunk_size` and
+    send each chunk to the configured AIL instance.
+    """
     leak_path = os.path.abspath(leak_path)
     dir_path = os.path.dirname(leak_path)
 
     # 1) Split ---------------------------------------------------------------
-    print(f"[*] Splitting '{leak_path}' into ≈{cfg.chunk_size}‑byte chunks …")
+    print(f"[INFO] Splitting '{leak_path}' into ≈{cfg.chunk_size}‑byte chunks …")
+
     fs = Filesplit()
     fs.split(
         file=leak_path,
@@ -126,65 +143,61 @@ def split_and_send(cfg: SimpleNamespace, leak_path: str) -> None:
         newline=True,
     )
 
-    # Collect the chunk list via glob ---------------------------------------
     chunk_files = glob_chunk_files(dir_path, leak_path)
-
     if not chunk_files:
-        print("[!] No chunks produced – nothing to do.")
+        print("[DEBUG] No chunks produced – nothing to do.")
         return
 
-    # 2) Ping AIL once before the upload loop --------------------------------
     if not check_ail(cfg.ail_url, cfg.api_key):
-        print("[!] AIL instance unreachable – aborting.")
-        return
+        raise ConnectionError("AIL instance unreachable")
 
-    # 3) Upload each chunk ----------------------------------------------------
     for chunk in chunk_files:
-        chunk = os.path.abspath(chunk)
+        chunk_abs = os.path.abspath(chunk)
         try:
-            with open(chunk, "rb") as fr:
-                raw_bytes = fr.read()
-                sha256 = hashlib.sha256(raw_bytes).hexdigest()
-            with open(chunk, encoding="utf-8", errors="ignore") as fr:
+            with open(chunk_abs, "rb") as fr:
+                sha256 = hashlib.sha256(fr.read()).hexdigest()
+            with open(chunk_abs, encoding="utf-8", errors="ignore") as fr:
                 lines = fr.readlines()
-        except Exception as exc:
-            print(f"[read] Unable to read {chunk}: {exc}")
-            continue
+        except Exception as e:
+            raise IOError(f"Failed to read chunk {chunk_abs}: {e}")
 
-        if not publish_chunk(cfg, leak_path, chunk, sha256, lines):
-            print("[!] Stopping after failure – remaining chunks kept on disk.")
-            break
-
-        if cfg.wait > 0:
+        success = publish_chunk(cfg, leak_path, chunk_abs, sha256, lines)
+        if not success:
+            raise RuntimeError(f"Upload failed for chunk {chunk_abs}")
+        if cfg.wait and cfg.wait > 0:
             Event().wait(cfg.wait)
 
-    print("[*] Done.")
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+def split(
+    file: str,
+    chunk_size: int,
+    api_key: str,
+    ail_url: str,
+    uuid: str,
+    name: str = "single_file_feeder",
+    wait: Optional[float] = 0.5,
+) -> None:
+    """
+    Public API: split `file` into chunks and push to AIL.
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Split a single file and push its chunks to AIL (glob version)")
-    p.add_argument("--file", "-f", required=True, help="Path to the leak file to process")
-    p.add_argument("--chunk-size", "-c", type=int, required=True, help="Chunk size in bytes")
-    p.add_argument("--api-key", "-k", required=True, help="AIL API token")
-    p.add_argument("--ail-url", "-u", required=True, help="Base URL of the AIL instance (without trailing slash)")
-    p.add_argument("--uuid", "-i", required=True, help="Feeder UUID")
-    p.add_argument("--name", "-n", default="single_file_feeder", help="Feeder name visible in AIL")
-    p.add_argument("--wait", "-w", type=float, default=0.5, help="Seconds to sleep between uploads")
-    return p
-
-
-def main() -> None:
-    args = build_arg_parser().parse_args()
-
-    cfg = SimpleNamespace(**vars(args))
-
+    :param file:       Path to the file to process
+    :param chunk_size: Maximum chunk size in bytes
+    :param api_key:    AIL API token
+    :param ail_url:    Base URL of the AIL instance
+    :param uuid:       Feeder UUID
+    :param name:       Source name for metadata
+    :param wait:       Seconds to wait between uploads
+    """
+    cfg = SimpleNamespace(
+        chunk_size=chunk_size,
+        api_key=api_key,
+        ail_url=ail_url,
+        uuid=uuid,
+        name=name,
+        wait=wait or 0,
+    )
     start = time.time()
-    split_and_send(cfg, cfg.file)
-    print(f"Run time(s): {time.time() - start:.2f}")
-
-
-if __name__ == "__main__":
-    main()
+    split_and_send(cfg, file)
+    elapsed = time.time() - start
+    # Optionally return runtime or other metrics
+    return elapsed
