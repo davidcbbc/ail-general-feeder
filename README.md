@@ -1,7 +1,8 @@
 # ail-general-feeder
-# ## Overview
 
-`ail-general-feeder` is an asynchronous file processing pipeline that takes arbitrary files (including archives with optional password hints), extracts and merges their contents, and feeds them into an AIL (Analytical Information Logging) instance in configurable-sized chunks.
+## Overview
+
+`ail-general-feeder` is an asynchronous file processing pipeline that takes arbitrary files (including archives with optional password hints), extracts and merges their contents, and feeds them into an AIL (Analysis Information Leak) framework instance in configurable-sized chunks.
 
 ## Features
 
