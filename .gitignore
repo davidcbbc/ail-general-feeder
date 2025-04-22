@@ -6,3 +6,5 @@ Working_Folder
 Working_Folder/*
 __pycache__/*
 __pycache__
+worker.pid
+worker.log
