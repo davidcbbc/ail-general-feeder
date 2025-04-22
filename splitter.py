@@ -102,7 +102,7 @@ def glob_chunk_files(dir_path: str, leak_path: str) -> List[str]:
     paths = list(Path(dir_path).glob(pattern))
 
     # Sort by the digits between the underscore and the extension
-    idx_re = re.compile(rf"_{r'(\\d+)'}{re.escape(suffix)}$")
+    idx_re = re.compile(rf"_(\d+){re.escape(suffix)}$")
 
     def numeric_key(p: Path):
         m = idx_re.search(p.name)
