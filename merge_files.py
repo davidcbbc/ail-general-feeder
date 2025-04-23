@@ -19,6 +19,7 @@ Requires:  Python ≥ 3.9 and the package *python‑magic*
 from __future__ import annotations
 
 import shutil
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -66,6 +67,7 @@ def append_if_text(fpath: Path, merged_path: Path, lock: threading.Lock) -> None
 
 def merge(target_dir):
     """Flatten directory, merge text files, leave only merged.txt."""
+    target_dir = Path(target_dir)
 
     if not target_dir.is_dir():
         sys.exit(f"[ERROR]'{target_dir}' is not a valid directory.")

@@ -69,7 +69,7 @@ sudo systemctl start rabbitmq-server
 ### 2. Start the Celery Worker
 
 ```bash
-celery -A worker worker --loglevel=info
+celery -A worker worker --loglevel=info --detach --logfile=./worker.log --pidfile=./worker.pid --concurrency=1 --prefetch-multiplier=1
 ```
 
 ### 3. Submit Files for Processing

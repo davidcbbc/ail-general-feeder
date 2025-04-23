@@ -28,10 +28,10 @@ PASSWORD_PATTERN = re.compile(r'\b(?:pwd|pw|password|pass)\b[\s:=]+(\S+)', re.IG
 CHUNK_SIZE = 1000000
 
 # AIL API token
-API_KEY = "ABCDEF123456"
+API_KEY = ""
 
 # Base URL of the AIL instance with API endpoint
-AIL_URL = "https://ail.example.org"
+AIL_URL = "https://localhost:443/api/v1"
 
 # Feeder UUID
 UUID = "17450648-9581-42a6-b7c4-28c13f4664bf"
@@ -109,9 +109,8 @@ def is_valid_password(archive_path: str, password: str) -> bool:
         patoolib.test_archive(
             archive_path,
             verbosity=-2,
-            interactive=False,      # don’t block for input :contentReference[oaicite:3]{index=3}
-            password=password       # pass the password on the CLI :contentReference[oaicite:4]{index=4}
-        )
+            interactive=False,
+            password=password)
         return True
     except PatoolError as e:
         # Any integrity or password failure surfaces as PatoolError
@@ -180,6 +179,7 @@ def post_process():
         merge_files.merge(EXTRACTION_PATH)
     except Exception as e:
         print(f"[EXCEPTION] Merge files failed: {e}")
+        return
     try:
         print("[DEBUG] Splitting files and sending them to AIL ...")
         splitter.split(file=f"./{EXTRACTION_PATH}/merged.txt", 
@@ -192,6 +192,7 @@ def post_process():
 
     except Exception as e:
         print(f"[EXCEPTION] Splitter failed: {e}")
+        return
 
 
 @app.task
@@ -246,6 +247,8 @@ def process_file(file_path, optional_msg):
         return
 
     for candidate in candidates:
+        print(type(candidate))
+        print(candidate)
         if is_valid_password(dest,candidate):
             print(f"[SUCCESS] Found a valid password -> {candidate}")
             recursive_extract(EXTRACTION_PATH,candidate)
