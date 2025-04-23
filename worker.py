@@ -225,6 +225,9 @@ def process_file(file_path, optional_msg):
     for path in (LOCAL_STORAGE, EXTRACTION_PATH):
         os.makedirs(path, exist_ok=True)
 
+    logger.info(f"cleaning extraction path {EXTRACTION_PATH}")
+    cleanup_extraction_path()
+
     logger.info(f"process_file: path={file_path}, msg={optional_msg}")
     try:
 
