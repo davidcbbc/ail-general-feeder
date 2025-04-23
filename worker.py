@@ -5,25 +5,28 @@ import re
 import patoolib
 from patoolib.util import PatoolError
 from celery import Celery
+from celery.utils.log import get_task_logger
 import magic
 import merge_files
 import splitter
 
+#### Worker Configurations ####
 # Configure Celery to use RabbitMQ as broker
 app = Celery('tasks', broker='pyamqp://guest@localhost//')
+
+# Set celery logger
+logger = get_task_logger(__name__)
 
 # Local storage for copying the files
 LOCAL_STORAGE = "./Leaks_Storage"
 
 # Directories for storage and extraction\LOCAL_STORAGE = "./Leaks_Storage"
 EXTRACTION_PATH = "./Working_Folder"
-for path in (LOCAL_STORAGE, EXTRACTION_PATH):
-    os.makedirs(path, exist_ok=True)
 
 # Regex to extract candidate passwords from a message
 PASSWORD_PATTERN = re.compile(r'\b(?:pwd|pw|password|pass)\b[\s:=]+(\S+)', re.IGNORECASE)
 
-# Splitter Configurations
+#### Splitter Configurations ####
 # Maximum chunk size in bytes
 CHUNK_SIZE = 1000000
 
@@ -42,6 +45,18 @@ NAME = "LeakFeeder"
 # Seconds to wait between uploads
 WAIT = 0.2
 
+#### Functions ####
+
+def cleanup_extraction_path():
+    """
+    Remove all files in the extraction path and recreate the directory.
+    """
+    logger.info(f"cleaning {EXTRACTION_PATH} ...")
+    try:
+        shutil.rmtree(EXTRACTION_PATH)
+    except Exception as e:
+        logger.error(f"Failed to clean extraction path: {e}")
+    os.makedirs(EXTRACTION_PATH, exist_ok=True)
 
 def extract_password_candidates(msg):
     """
@@ -54,7 +69,7 @@ def extract_password_candidates(msg):
         list[str]: A list of extracted candidate passwords.
     """
     matches = PASSWORD_PATTERN.findall(msg or "")
-    print(f"[DEBUG] extract_password_candidates -> {matches}")
+    logger.debug(f"extract_password_candidates -> {matches}")
     return matches
 
 
@@ -71,8 +86,7 @@ def is_archive_file(path: str) -> bool:
     try:
         mtype = mime.from_file(path)
     except Exception as e:
-        # If libmagic fails (e.g. unreadable file), assume not an archive
-        print(f"[EXCEPTION] {e}")
+        logger.error(f"Error determining mime type for {path}: {e}")
         return False
 
     # Common archive MIME types
@@ -105,7 +119,7 @@ def is_valid_password(archive_path: str, password: str) -> bool:
 
     try:
         # Runs the equivalent of `patool test --verbose archive.rar`
-        print(f"[DEBUG] Testing password for archive {archive_path}")
+        logger.debug(f"Testing password for archive {archive_path}")
         patoolib.test_archive(
             archive_path,
             verbosity=-2,
@@ -113,8 +127,7 @@ def is_valid_password(archive_path: str, password: str) -> bool:
             password=password)
         return True
     except PatoolError as e:
-        # Any integrity or password failure surfaces as PatoolError
-        print(f"[EXCEPTION] {e}")
+        logger.error(f"Password test failed for {archive_path}: {e}")
         return False
 
 def recursive_extract(directory: str, password: str = None, max_depth: int = 8, _current_depth: int = 0) -> None:
@@ -150,7 +163,7 @@ def recursive_extract(directory: str, password: str = None, max_depth: int = 8, 
         base_name, _ = os.path.splitext(os.path.basename(archive_path))
         extract_path = os.path.join(parent, base_name)
         os.makedirs(extract_path, exist_ok=True)
-        print(f"[DEBUG] Extracting {archive_path}")
+        logger.debug(f"Extracting {archive_path}")
         try:
             patoolib.extract_archive(
                 archive_path,
@@ -175,23 +188,24 @@ def post_process():
     Runs post-extraction steps: merge files and split files.
     """
     try:
-        print("[DEBUG] Merging files into single txt file...")
+        logger.debug("Merging files into single txt file...")
         merge_files.merge(EXTRACTION_PATH)
     except Exception as e:
-        print(f"[EXCEPTION] Merge files failed: {e}")
+        logger.error(f"Merge files failed: {e}")
+        cleanup_extraction_path()
         return
     try:
-        print("[DEBUG] Splitting files and sending them to AIL ...")
-        splitter.split(file=f"./{EXTRACTION_PATH}/merged.txt", 
-                        chunk_size=CHUNK_SIZE, 
-                        api_key=API_KEY, 
-                        ail_url=AIL_URL, 
-                        uuid=UUID,
-                        name=NAME,
-                        wait=WAIT)
-
+        logger.debug("Splitting files and sending them to AIL ...")
+        splitter.split(file=f"./{EXTRACTION_PATH}/merged.txt",
+                       chunk_size=CHUNK_SIZE,
+                       api_key=API_KEY,
+                       ail_url=AIL_URL,
+                       uuid=UUID,
+                       name=NAME,
+                       wait=WAIT)
     except Exception as e:
-        print(f"[EXCEPTION] Splitter failed: {e}")
+        logger.error(f"Splitter failed: {e}")
+        cleanup_extraction_path()
         return
 
 
@@ -205,55 +219,68 @@ def process_file(file_path, optional_msg):
         file_path (str): Path to the incoming file.
         optional_msg (str): Message containing password hints.
     """
-    print(f"[INFO] process_file: path={file_path}, msg={optional_msg}")
+    for path in (LOCAL_STORAGE, EXTRACTION_PATH):
+        os.makedirs(path, exist_ok=True)
 
-    # Move to local storage
+    logger.info(f"process_file: path={file_path}, msg={optional_msg}")
     try:
+
+        # Move to local storage
         dest = os.path.join(LOCAL_STORAGE, os.path.basename(file_path))
-        shutil.move(file_path, dest)
-        print(f"[DEBUG] moved to {dest}")
-    except Exception as e:
-        print(f"[ERROR] move failed: {e}")
-        return
+        try:
+            shutil.move(file_path, dest)
+            logger.debug(f"Moved to {dest}")
+        except Exception as e:
+            logger.error(f"Move failed: {e}")
+            cleanup_extraction_path()
+            return
 
-    # Detect MIME type
-    mime, _ = mimetypes.guess_type(dest)
-    print(f"[DEBUG] mime_type={mime}")
+        # Detect MIME type
+        mime, _ = mimetypes.guess_type(dest)
+        logger.debug(f"mime_type={mime}")
 
-    # Move file to EXTRACTION_PATH
-    try:
-        shutil.copy(dest, EXTRACTION_PATH)
-        print(f"[DEBUG] copied to {EXTRACTION_PATH}")
-    except Exception as e:
-        print(f"[ERROR] copy failed: {e}")
+        # Move file to extraction path
+        try:
+            shutil.copy(dest, EXTRACTION_PATH)
+            logger.debug(f"Copied to {EXTRACTION_PATH}")
+        except Exception as e:
+            logger.error(f"Copy failed: {e}")
+            cleanup_extraction_path()
+            return
 
-    # Handle uncompressed text files
-    if mime and mime.startswith('text'):
-        print("[DEBUG] Uncompressed text detected, moving to post-process methods.")
-        post_process()
-        return
-
-    # Archive handling
-    candidates = extract_password_candidates(optional_msg)
-
-    if (len(candidates) == 0):
-        print("[DEBUG] No candidate passwords found, trying to decompress without password ...")
-        if is_valid_password(dest,""):
-            print("[DEBUG] Using no password worker, extracing the archive ...")
-            recursive_extract(EXTRACTION_PATH,None)
+        # Handle uncompressed text files
+        if mime and mime.startswith('text'):
+            logger.debug("Uncompressed text detected, moving to post-process methods.")
             post_process()
             return
-        print("[ERROR] Using no password didn't work - file ignored.")
-        return
 
-    for candidate in candidates:
-        print(type(candidate))
-        print(candidate)
-        if is_valid_password(dest,candidate):
-            print(f"[SUCCESS] Found a valid password -> {candidate}")
-            recursive_extract(EXTRACTION_PATH,candidate)
-            post_process()
+        # Archive handling
+        candidates = extract_password_candidates(optional_msg)
+
+        if not candidates:
+            logger.debug("No candidate passwords found, trying to decompress without password ...")
+            if is_valid_password(dest, ""):
+                logger.debug("Using no password worker, extracting the archive ...")
+                recursive_extract(EXTRACTION_PATH, None)
+                post_process()
+                return
+            logger.error("Using no password didn't work - file ignored.")
+            cleanup_extraction_path()
             return
+
+        for candidate in candidates:
+            logger.debug(f"Candidate type: {type(candidate)}")
+            logger.debug(f"Candidate: {candidate}")
+            if is_valid_password(dest, candidate):
+                logger.info(f"Found a valid password -> {candidate}")
+                recursive_extract(EXTRACTION_PATH, candidate)
+                post_process()
+                return
         
-    print("[ERROR] All candidate passwords failed - file ignored.")
-    return
+        logger.error("All candidate passwords failed - file ignored.")
+        cleanup_extraction_path()
+        return
+    except Exception as e:
+        logger.exception(f"Unexpected error in process_file: {e}")
+        cleanup_extraction_path()
+        return
