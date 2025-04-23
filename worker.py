@@ -173,12 +173,15 @@ def recursive_extract(directory: str, password: str = None, max_depth: int = 8, 
                 password=password
             )
         except PatoolError as e:
-            raise RuntimeError(f"[EXCEPTION] Failed to extract {archive_path}: {e}")
+            logger.error(f"Failed to extract and ignoring {archive_path}: {e}")
+            #raise RuntimeError(f"[EXCEPTION] Failed to extract {archive_path}: {e}")
+            return
+            
 
         # Recurse into the new folder
         recursive_extract(
             extract_path,
-            password=password,
+            password=None,
             max_depth=max_depth,
             _current_depth=_current_depth + 1
         )
