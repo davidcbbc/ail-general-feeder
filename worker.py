@@ -162,6 +162,7 @@ def recursive_extract(directory: str, password: str = None, max_depth: int = 8, 
         parent = os.path.dirname(archive_path)
         base_name, _ = os.path.splitext(os.path.basename(archive_path))
         extract_path = os.path.join(parent, base_name)
+        extract_path = extract_path + '_EXTRACTED_AIL'
         os.makedirs(extract_path, exist_ok=True)
         logger.info(f"Extracting {archive_path}")
         try:
