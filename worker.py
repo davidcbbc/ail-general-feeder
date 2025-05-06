@@ -57,9 +57,9 @@ WAIT = float(os.getenv("WAIT", "0.2"))
 
 #### Functions ####
 
-def cleanup_extraction_path():
+def cleanup_paths():
     """
-    Remove all files in the extraction path and recreate the directory.
+    Remove all files in the extraction and local storage paths and recreate the directory.
     """
     logger.info(f"cleaning {EXTRACTION_PATH} ...")
     try:
@@ -67,6 +67,13 @@ def cleanup_extraction_path():
     except Exception as e:
         logger.error(f"Failed to clean extraction path: {e}")
     os.makedirs(EXTRACTION_PATH, exist_ok=True)
+
+    logger.info(f"cleaning {LOCAL_STORAGE} ...")
+    try:
+        shutil.rmtree(LOCAL_STORAGE)
+    except Exception as e:
+        logger.error(f"Failed to local storage path: {e}")
+    os.makedirs(LOCAL_STORAGE, exist_ok=True)
 
 def extract_password_candidates(msg):
     """
@@ -206,7 +213,7 @@ def post_process():
         merge_files.merge(EXTRACTION_PATH)
     except Exception as e:
         logger.error(f"Merge files failed: {e}")
-        cleanup_extraction_path()
+        cleanup_paths()
         return
     try:
         logger.info("Splitting files and sending them to AIL ...")
@@ -219,7 +226,7 @@ def post_process():
                        wait=WAIT)
     except Exception as e:
         logger.error(f"Splitter failed: {e}")
-        cleanup_extraction_path()
+        cleanup_paths()
         return
 
 
@@ -237,7 +244,7 @@ def process_file(file_path, optional_msg):
         os.makedirs(path, exist_ok=True)
 
     logger.info(f"cleaning extraction path {EXTRACTION_PATH}")
-    cleanup_extraction_path()
+    cleanup_paths()
 
     logger.info(f"process_file: path={file_path}, msg={optional_msg}")
     try:
@@ -257,7 +264,7 @@ def process_file(file_path, optional_msg):
             logger.info(f"SCP succeeded: {remote_src} → {dest}")
         except subprocess.CalledProcessError as e:
             logger.error(f"SCP failed ({e.returncode}): {scp_cmd}")
-            cleanup_extraction_path()
+            cleanup_paths()
             return
 
         # Detect MIME type
@@ -270,7 +277,7 @@ def process_file(file_path, optional_msg):
             logger.info(f"Copied to {EXTRACTION_PATH}")
         except Exception as e:
             logger.error(f"Copy failed: {e}")
-            cleanup_extraction_path()
+            cleanup_paths()
             return
 
         # Handle uncompressed text files
@@ -290,7 +297,7 @@ def process_file(file_path, optional_msg):
                 post_process()
                 return
             logger.error("Using no password didn't work - file ignored.")
-            cleanup_extraction_path()
+            cleanup_paths()
             return
 
         for candidate in candidates:
@@ -301,9 +308,9 @@ def process_file(file_path, optional_msg):
                 return
         
         logger.error("All candidate passwords failed - file ignored.")
-        cleanup_extraction_path()
+        cleanup_paths()
         return
     except Exception as e:
         logger.exception(f"Unexpected error in process_file: {e}")
-        cleanup_extraction_path()
+        cleanup_paths()
         return
