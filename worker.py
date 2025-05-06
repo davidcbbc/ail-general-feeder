@@ -9,41 +9,51 @@ from celery.utils.log import get_task_logger
 import magic
 import merge_files
 import splitter
+import subprocess
+
+# Load .env file into os.environ
+from dotenv import load_dotenv
+load_dotenv()
 
 #### Worker Configurations ####
 # Configure Celery to use RabbitMQ as broker
-app = Celery('tasks', broker='pyamqp://guest@localhost//')
+app = Celery('tasks', broker=os.getenv("BROKER_URL"))
 
 # Set celery logger
 logger = get_task_logger(__name__)
 
+# SSH Configuration
+REMOTE_USER   = os.getenv("SSH_USER")
+SERVER_IP     = os.getenv("SERVER_IP")
+PRIVATE_KEY   = os.getenv("SSH_PRIVATE_KEY")
+
 # Local storage for copying the files
-LOCAL_STORAGE = "./Leaks_Storage"
+LOCAL_STORAGE = os.getenv("LOCAL_STORAGE")
 
 # Directories for storage and extraction\LOCAL_STORAGE = "./Leaks_Storage"
-EXTRACTION_PATH = "./Working_Folder"
+EXTRACTION_PATH = os.getenv("EXTRACTION_PATH")
 
 # Regex to extract candidate passwords from a message
 PASSWORD_PATTERN = re.compile(r'\b(?:pwd|pw|password|pass)\b[\s:=]+(\S+)', re.IGNORECASE)
 
 #### Splitter Configurations ####
 # Maximum chunk size in bytes
-CHUNK_SIZE = 1000000
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000000"))
 
 # AIL API token
-API_KEY = ""
+API_KEY = os.getenv("API_KEY")
 
 # Base URL of the AIL instance with API endpoint
-AIL_URL = "https://localhost:443/api/v1"
+AIL_URL = os.getenv("AIL_URL")
 
 # Feeder UUID
-UUID = "17450648-9581-42a6-b7c4-28c13f4664bf"
+UUID = os.getenv("UUID")
 
 # Source name for metadata
-NAME = "LeakFeeder"
+NAME = os.getenv("NAME")
 
 # Seconds to wait between uploads
-WAIT = 0.2
+WAIT = float(os.getenv("WAIT", "0.2"))
 
 #### Functions ####
 
@@ -232,13 +242,21 @@ def process_file(file_path, optional_msg):
     logger.info(f"process_file: path={file_path}, msg={optional_msg}")
     try:
 
-        # Move to local storage
+        # Pull the remote file down via scp into LOCAL_STORAGE
         dest = os.path.join(LOCAL_STORAGE, os.path.basename(file_path))
+        remote_src = f"{REMOTE_USER}@{SERVER_IP}:{file_path}"
+        scp_cmd = [
+            "scp",
+            "-i", PRIVATE_KEY,
+            "-o", "StrictHostKeyChecking=no",   # optional, skip host‐key prompt
+            remote_src,
+            dest
+        ]
         try:
-            shutil.move(file_path, dest)
-            logger.info(f"Moved to {dest}")
-        except Exception as e:
-            logger.error(f"Move failed: {e}")
+            subprocess.run(scp_cmd, check=True)
+            logger.info(f"SCP succeeded: {remote_src} → {dest}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"SCP failed ({e.returncode}): {scp_cmd}")
             cleanup_extraction_path()
             return
 
