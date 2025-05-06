@@ -6,3 +6,4 @@ amqp
 python-magic
 rarfile
 patool
+dotenv
