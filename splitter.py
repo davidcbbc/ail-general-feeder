@@ -29,6 +29,8 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 from typing import List, Optional
+import subprocess
+import shlex
 
 import requests
 from fsplit.filesplit import Filesplit
@@ -57,48 +59,79 @@ def check_ail(ail_url: str, api_key: str) -> bool:
 
 def publish_chunk(
     cfg: SimpleNamespace,
-    leak_path: str,
     chunk_path: str,
-    sha256: str,
     lines: List[str],
+    logger
 ) -> bool:
     """
-    Compress, base64-encode, and send a chunk to the AIL API.
+    Compress the chunk to a .gz file, SCP it to a remote server and the execute the AIL FileImporter remotely through SSH.
 
-    :param cfg:        Configuration namespace (name, uuid, api_key, ail_url)
-    :param leak_path:  Original file path
-    :param chunk_path: Chunk file path
-    :param sha256:     SHA256 digest of the chunk
-    :param lines:      Lines of text in the chunk
-    :return:           True on success, False on failure
+    :param cfg:         Configuration namespace
+    :param chunk_path:  Local chunk file path (no extension)
+    :param lines:       Lines of text in the chunk
+    :param logger:      Celery logger
+    :return:            True on success, False on failure
     """
-    comp_b64 = base64.b64encode(gzip.compress("".join(lines).encode("utf-8"))).decode()
-    payload = {
-        "source": cfg.name,
-        "source-uuid": cfg.uuid,
-        "default-encoding": "UTF-8",
-        "meta": {
-            "Leaked:FileName": os.path.basename(leak_path),
-            "Leaked:Chunked": os.path.basename(chunk_path),
-        },
-        "data-sha256": sha256,
-        "data": comp_b64,
-    }
-    url = f"{cfg.ail_url}/import/json/item"
+    # 1) write out a gzip file
+    gz_path = f"{chunk_path}.gz"
     try:
-        resp = requests.post(
-            url,
-            headers={"Content-Type": "application/json", "Authorization": cfg.api_key},
-            json=payload,
-            timeout=120,
-            verify=False,
-        )
-        data = resp.json()
-        if data.get("status") == "success":
-            os.remove(chunk_path)
-            return True
+        with gzip.open(gz_path, "wb") as gz:
+            gz.write("".join(lines).encode("utf-8"))
+    except Exception as e:
+        logger.error(f"Failed to gzip-compress chunk: {e}")
         return False
-    except Exception:
+
+    # 2) build scp command
+    remote_src = f"{cfg.remote_user}@{cfg.server_ip}:{cfg.ail_gzip_path}/{gz_path}"
+    scp_cmd = [
+        "scp",
+        "-i", f"{cfg.private_key}",
+        "-o", "StrictHostKeyChecking=no",   # optional, skip host‐key prompt
+        gz_path,
+        remote_src
+    ]
+
+    
+    # 3) run scp
+    try:
+        subprocess.run(scp_cmd, check=True, timeout=60)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"SCP command failed (exit {e.returncode}): {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Error invoking SCP: {e}")
+        return False
+    
+
+    # 4) run ssh command to inject the gzip into the AIL processing queue
+    python_inline = (
+        f"import sys; "
+        f"import os; "
+        f"sys.path.insert(0, '{cfg.ail_folder_path}/bin/importer/'); "
+        f"os.environ['AIL_BIN'] = '{cfg.ail_folder_path}/bin'; "
+        f"import FileImporter; "
+        f"FileImporter.FileImporter().importer('{gz_path}')"
+    )
+
+    # 2) shell-quote it for python -c
+    py_cmd = f"source {cfg.ail_folder_path}/AILENV/bin/activate && cd {cfg.ail_gzip_path} && python3 -c {shlex.quote(python_inline)}"
+
+    # 3) shell-quote *that* for bash -lc
+    bash_cmd = shlex.quote(py_cmd)
+    ssh_cmd = [
+        "ssh", 
+        "-i", f"{cfg.private_key}",
+        "-o", "StrictHostKeyChecking=no",
+        f"{cfg.remote_user}@{cfg.server_ip}",
+        "bash", "-lc", bash_cmd
+    ]
+    try:
+        subprocess.run(ssh_cmd, check=True, timeout=200)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"SSH inline-Python failed (exit {e.returncode}): {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Error invoking SSH: {e}")
         return False
 
 
@@ -124,7 +157,7 @@ def glob_chunk_files(dir_path: str, leak_path: str) -> List[str]:
     return [str(p) for p in paths]
 
 
-def split_and_send(cfg: SimpleNamespace, leak_path: str) -> None:
+def split_and_send(cfg: SimpleNamespace, leak_path: str, logger) -> None:
     """
     Split the file at `leak_path` into chunks of size `cfg.chunk_size` and
     send each chunk to the configured AIL instance.
@@ -133,7 +166,7 @@ def split_and_send(cfg: SimpleNamespace, leak_path: str) -> None:
     dir_path = os.path.dirname(leak_path)
 
     # 1) Split ---------------------------------------------------------------
-    print(f"[INFO] Splitting '{leak_path}' into ≈{cfg.chunk_size}‑byte chunks …")
+    logger.info(f"Splitting '{leak_path}' into ≈{cfg.chunk_size}‑byte chunks …")
 
     fs = Filesplit()
     fs.split(
@@ -141,11 +174,12 @@ def split_and_send(cfg: SimpleNamespace, leak_path: str) -> None:
         split_size=cfg.chunk_size,
         output_dir=dir_path,
         newline=True,
+        logger=logger
     )
 
     chunk_files = glob_chunk_files(dir_path, leak_path)
     if not chunk_files:
-        print("[DEBUG] No chunks produced – nothing to do.")
+        logger.info("No chunks produced – nothing to do.")
         return
 
     if not check_ail(cfg.ail_url, cfg.api_key):
@@ -154,14 +188,12 @@ def split_and_send(cfg: SimpleNamespace, leak_path: str) -> None:
     for chunk in chunk_files:
         chunk_abs = os.path.abspath(chunk)
         try:
-            with open(chunk_abs, "rb") as fr:
-                sha256 = hashlib.sha256(fr.read()).hexdigest()
             with open(chunk_abs, encoding="utf-8", errors="ignore") as fr:
                 lines = fr.readlines()
         except Exception as e:
             raise IOError(f"Failed to read chunk {chunk_abs}: {e}")
 
-        success = publish_chunk(cfg, leak_path, chunk_abs, sha256, lines)
+        success = publish_chunk(cfg, chunk_abs, lines, logger=logger)
         if not success:
             raise RuntimeError(f"Upload failed for chunk {chunk_abs}")
         if cfg.wait and cfg.wait > 0:
@@ -169,6 +201,12 @@ def split_and_send(cfg: SimpleNamespace, leak_path: str) -> None:
 
 
 def split(
+    logger,
+    ail_folder_path: str,
+    ail_gzip_path: str,
+    remote_user: str,
+    server_ip: str,
+    private_key: str,
     file: str,
     chunk_size: int,
     api_key: str,
@@ -187,9 +225,15 @@ def split(
     :param uuid:       Feeder UUID
     :param name:       Source name for metadata
     :param wait:       Seconds to wait between uploads
+    :param logger:     Celery logger
     """
     cfg = SimpleNamespace(
         chunk_size=chunk_size,
+        ail_folder_path=ail_folder_path,
+        ail_gzip_path=ail_gzip_path,
+        remote_user=remote_user,
+        server_ip=server_ip,
+        private_key=private_key,
         api_key=api_key,
         ail_url=ail_url,
         uuid=uuid,
@@ -197,7 +241,7 @@ def split(
         wait=wait or 0,
     )
     start = time.time()
-    split_and_send(cfg, file)
+    split_and_send(cfg, file, logger)
     elapsed = time.time() - start
     # Optionally return runtime or other metrics
     return elapsed

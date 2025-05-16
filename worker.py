@@ -33,8 +33,12 @@ LOCAL_STORAGE = os.getenv("LOCAL_STORAGE")
 # Directories for storage and extraction\LOCAL_STORAGE = "./Leaks_Storage"
 EXTRACTION_PATH = os.getenv("EXTRACTION_PATH")
 
+# AIL paths to queue files for processing
+AIL_GZIP_PATH= os.getenv("AIL_GZIP_PATH")
+AIL_FOLDER_PATH= os.getenv("AIL_FOLDER_PATH")
+
 # Regex to extract candidate passwords from a message
-PASSWORD_PATTERN = re.compile(r'\b(?:pwd|pw|password|pass)\b[\s:=]+(\S+)', re.IGNORECASE)
+PASSWORD_PATTERN = re.compile(r'\b(?:pwd|pw|password|pass|🔑)\b[\s:=]+(\S+)', re.IGNORECASE)
 
 #### Splitter Configurations ####
 # Maximum chunk size in bytes
@@ -223,7 +227,11 @@ def post_process():
                        ail_url=AIL_URL,
                        uuid=UUID,
                        name=NAME,
-                       wait=WAIT)
+                       wait=WAIT,
+                       logger=logger,
+                       ail_folder_path=AIL_FOLDER_PATH,
+                       ail_gzip_path=AIL_GZIP_PATH
+                       )
     except Exception as e:
         logger.error(f"Splitter failed: {e}")
         cleanup_paths()

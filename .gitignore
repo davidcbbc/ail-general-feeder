@@ -8,3 +8,5 @@ __pycache__/*
 __pycache__
 worker.pid
 worker.log
+test/*
+test

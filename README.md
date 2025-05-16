@@ -27,7 +27,7 @@
 ## Prerequisites
 
 - Python ≥ 3.9
-- RabbitMQ server (default guest/guest)
+- RabbitMQ server
 - System dependencies for archive handling and MIME detection:
   - `libmagic` (for `python-magic`)
   - `patool`
@@ -66,6 +66,15 @@ sudo apt-get install -y python3-dev libmagic1 libmagic-dev poppler-utils unrar p
 sudo systemctl start rabbitmq-server
 ```
 
+(Optional) Change the worker timeout to 10 hours. This will prevent workers to stop working
+```bash
+# Set the value to 10h
+rabbitmqctl eval 'application:set_env(rabbit, consumer_timeout, 36000000).'
+
+# Check if the value was set
+rabbitmqctl eval 'application:get_env(rabbit, consumer_timeout).'
+```
+
 ### 2. Start the Celery Worker
 
 ```bash
@@ -97,7 +106,3 @@ python3 publisher.py /path/to/leak-file.zip "password: secret123 pwd=guess456"
 ## Contributing
 
 Contributions, issues, and feature requests are welcome! Feel free to fork the repository and open a pull request.
-
-## License
-
-This project is released under the [MIT License](LICENSE) (or specify your license).
