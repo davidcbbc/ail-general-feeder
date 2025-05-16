@@ -103,6 +103,7 @@ def publish_chunk(
         logger.error(f"Error invoking SCP: {e}")
         return False
     
+    
 
     # 4) run ssh command to inject the gzip into the AIL processing queue
     python_inline = (
@@ -134,6 +135,8 @@ def publish_chunk(
     except Exception as e:
         logger.error(f"Error invoking SSH: {e}")
         return False
+    
+    return True
 
 
 def glob_chunk_files(dir_path: str, leak_path: str) -> List[str]:
