@@ -230,7 +230,10 @@ def post_process():
                        wait=WAIT,
                        logger=logger,
                        ail_folder_path=AIL_FOLDER_PATH,
-                       ail_gzip_path=AIL_GZIP_PATH
+                       ail_gzip_path=AIL_GZIP_PATH,
+                       remote_user=REMOTE_USER,
+                       server_ip=SERVER_IP,
+                       private_key=PRIVATE_KEY
                        )
     except Exception as e:
         logger.error(f"Splitter failed: {e}")
