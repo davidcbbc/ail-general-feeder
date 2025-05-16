@@ -60,6 +60,7 @@ def check_ail(ail_url: str, api_key: str) -> bool:
 def publish_chunk(
     cfg: SimpleNamespace,
     chunk_path: str,
+    sha256: str,
     lines: List[str],
     logger
 ) -> bool:
@@ -82,7 +83,7 @@ def publish_chunk(
         return False
 
     # 2) build scp command
-    remote_src = f"{cfg.remote_user}@{cfg.server_ip}:{cfg.ail_gzip_path}/{gz_path}"
+    remote_src = f"{cfg.remote_user}@{cfg.server_ip}:{cfg.ail_gzip_path}/{sha256}.gz"
     scp_cmd = [
         "scp",
         "-i", f"{cfg.private_key}",
@@ -110,7 +111,7 @@ def publish_chunk(
         f"sys.path.insert(0, '{cfg.ail_folder_path}/bin/importer/'); "
         f"os.environ['AIL_BIN'] = '{cfg.ail_folder_path}/bin'; "
         f"import FileImporter; "
-        f"FileImporter.FileImporter().importer('{gz_path}')"
+        f"FileImporter.FileImporter().importer('{sha256}.gz')"
     )
 
     # 2) shell-quote it for python -c
@@ -188,12 +189,14 @@ def split_and_send(cfg: SimpleNamespace, leak_path: str, logger) -> None:
     for chunk in chunk_files:
         chunk_abs = os.path.abspath(chunk)
         try:
+            with open(chunk_abs, "rb") as fr:
+                sha256 = hashlib.sha256(fr.read()).hexdigest()
             with open(chunk_abs, encoding="utf-8", errors="ignore") as fr:
                 lines = fr.readlines()
         except Exception as e:
             raise IOError(f"Failed to read chunk {chunk_abs}: {e}")
 
-        success = publish_chunk(cfg, chunk_abs, lines, logger=logger)
+        success = publish_chunk(cfg, chunk_abs, sha256, lines, logger=logger)
         if not success:
             raise RuntimeError(f"Upload failed for chunk {chunk_abs}")
         if cfg.wait and cfg.wait > 0:
