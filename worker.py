@@ -2,6 +2,7 @@ import os
 import shutil
 import mimetypes
 import re
+import tempfile
 import patoolib
 from patoolib.util import PatoolError
 from celery import Celery
@@ -126,30 +127,45 @@ def is_archive_file(path: str) -> bool:
 
     return mtype in archive_mimes
 
-def is_valid_password(archive_path: str, password: str) -> bool:
-    """
-    Verify that `password` can unlock and pass an integrity test on the compressed file.
+def try_extract(archive_path: str, password: str | None, outdir_parent: str) -> bool:
+    """Attempt to extract ``archive_path`` using ``password``.
 
-    :param archive_path: Path to the compressed file
-    :param password:     Candidate password for the archive
-    :return:             True if password is correct, False otherwise
-    :raises FileNotFoundError: If the archive does not exist
+    The archive is extracted into a temporary directory.  If extraction
+    succeeds the contents are moved into ``outdir_parent``/``<base>_EXTRACTED_AIL``.
+    All temporary files are cleaned up on success or failure.
+
+    :param archive_path:   Path to the compressed file.
+    :param password:       Candidate password for the archive, ``None`` if no password.
+    :param outdir_parent:  Directory where extracted files should end up.
+    :return:               ``True`` on successful extraction, ``False`` otherwise.
     """
     if not os.path.isfile(archive_path):
-        raise FileNotFoundError(f"[ERROR] No such file: {archive_path}")
+        logger.error(f"No such file: {archive_path}")
+        return False
 
+    base_name, _ = os.path.splitext(os.path.basename(archive_path))
+    final_dir = os.path.join(outdir_parent, f"{base_name}_EXTRACTED_AIL")
+
+    temp_dir = tempfile.mkdtemp()
     try:
-        # Runs the equivalent of `patool test --verbose archive.rar`
-        logger.info(f"Testing password for archive {archive_path}")
-        patoolib.test_archive(
+        patoolib.extract_archive(
             archive_path,
+            outdir=temp_dir,
             verbosity=-2,
             interactive=False,
-            password=password)
-        return True
+            password=password,
+        )
     except PatoolError as e:
-        logger.error(f"Password test failed for {archive_path}: {e}")
+        logger.error(f"Failed to extract {archive_path}: {e}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
         return False
+
+    os.makedirs(final_dir, exist_ok=True)
+    for item in os.listdir(temp_dir):
+        shutil.move(os.path.join(temp_dir, item), final_dir)
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    logger.info(f"Extraction succeeded for {archive_path} -> {final_dir}")
+    return True
 
 def recursive_extract(directory: str, password: str = None, max_depth: int = 8, _current_depth: int = 0) -> None:
     """
@@ -182,21 +198,11 @@ def recursive_extract(directory: str, password: str = None, max_depth: int = 8, 
     for archive_path in archives:
         parent = os.path.dirname(archive_path)
         base_name, _ = os.path.splitext(os.path.basename(archive_path))
-        extract_path = os.path.join(parent, base_name)
-        extract_path = extract_path + '_EXTRACTED_AIL'
-        os.makedirs(extract_path, exist_ok=True)
+        extract_path = os.path.join(parent, f"{base_name}_EXTRACTED_AIL")
         logger.info(f"Extracting {archive_path}")
-        try:
-            patoolib.extract_archive(
-                archive_path,
-                outdir=extract_path,
-                verbosity=-2,
-                interactive=False,
-                password=password
-            )
-        except PatoolError as e:
-            logger.error(f"Failed to extract and ignoring {archive_path}: {e}")
-            #raise RuntimeError(f"[EXCEPTION] Failed to extract {archive_path}: {e}")
+
+        if not try_extract(archive_path, password, parent):
+            logger.error(f"Failed to extract and ignoring {archive_path}")
             return
             
 
@@ -298,13 +304,17 @@ def process_file(file_path, optional_msg):
             return
 
         # Archive handling
+        archive_path = os.path.join(EXTRACTION_PATH, os.path.basename(dest))
+        base_name, _ = os.path.splitext(os.path.basename(archive_path))
+        extract_dir = os.path.join(EXTRACTION_PATH, f"{base_name}_EXTRACTED_AIL")
+
         candidates = extract_password_candidates(optional_msg)
 
         if not candidates:
             logger.info("No candidate passwords found, trying to decompress without password ...")
-            if is_valid_password(dest, ""):
+            if try_extract(archive_path, "", EXTRACTION_PATH):
                 logger.info("Using no password worker, extracting the archive ...")
-                recursive_extract(EXTRACTION_PATH, None)
+                recursive_extract(extract_dir, None)
                 post_process()
                 return
             logger.error("Using no password didn't work - file ignored.")
@@ -312,9 +322,9 @@ def process_file(file_path, optional_msg):
             return
 
         for candidate in candidates:
-            if is_valid_password(dest, candidate):
+            if try_extract(archive_path, candidate, EXTRACTION_PATH):
                 logger.info(f"Found a valid password -> {candidate}")
-                recursive_extract(EXTRACTION_PATH, candidate)
+                recursive_extract(extract_dir, candidate)
                 post_process()
                 return
         
