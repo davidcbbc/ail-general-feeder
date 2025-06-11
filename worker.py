@@ -4,6 +4,8 @@ import mimetypes
 import re
 import patoolib
 from patoolib.util import PatoolError
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from celery import Celery
 from celery.utils.log import get_task_logger
 import magic
@@ -151,7 +153,35 @@ def is_valid_password(archive_path: str, password: str) -> bool:
         logger.error(f"Password test failed for {archive_path}: {e}")
         return False
 
-def recursive_extract(directory: str, password: str = None, max_depth: int = 8, _current_depth: int = 0) -> None:
+def _extract_and_recurse(archive_path: str, password: str, max_depth: int, current_depth: int, executor: ThreadPoolExecutor) -> None:
+    """Helper to extract a single archive and recurse into the result."""
+    parent = os.path.dirname(archive_path)
+    base_name, _ = os.path.splitext(os.path.basename(archive_path))
+    extract_path = os.path.join(parent, base_name) + '_EXTRACTED_AIL'
+    os.makedirs(extract_path, exist_ok=True)
+    logger.info(f"Extracting {archive_path}")
+    try:
+        patoolib.extract_archive(
+            archive_path,
+            outdir=extract_path,
+            verbosity=-2,
+            interactive=False,
+            password=password
+        )
+    except PatoolError as e:
+        logger.error(f"Failed to extract and ignoring {archive_path}: {e}")
+        return
+
+    recursive_extract(
+        extract_path,
+        password=None,
+        max_depth=max_depth,
+        _current_depth=current_depth + 1,
+        executor=executor,
+    )
+
+
+def recursive_extract(directory: str, password: str = None, max_depth: int = 8, _current_depth: int = 0, executor: ThreadPoolExecutor | None = None) -> None:
     """
     Recursively scan 'directory' for archives. Extract any found in place,
     then recurse into newly created subdirectories or files, up to max_depth.
@@ -178,35 +208,29 @@ def recursive_extract(directory: str, password: str = None, max_depth: int = 8, 
     if not archives:
         return
 
-    # Extract each archive and recurse into its extraction folder
-    for archive_path in archives:
-        parent = os.path.dirname(archive_path)
-        base_name, _ = os.path.splitext(os.path.basename(archive_path))
-        extract_path = os.path.join(parent, base_name)
-        extract_path = extract_path + '_EXTRACTED_AIL'
-        os.makedirs(extract_path, exist_ok=True)
-        logger.info(f"Extracting {archive_path}")
-        try:
-            patoolib.extract_archive(
-                archive_path,
-                outdir=extract_path,
-                verbosity=-2,
-                interactive=False,
-                password=password
-            )
-        except PatoolError as e:
-            logger.error(f"Failed to extract and ignoring {archive_path}: {e}")
-            #raise RuntimeError(f"[EXCEPTION] Failed to extract {archive_path}: {e}")
-            return
-            
+    own_exec = False
+    if executor is None:
+        executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
+        own_exec = True
 
-        # Recurse into the new folder
-        recursive_extract(
-            extract_path,
-            password=None,
-            max_depth=max_depth,
-            _current_depth=_current_depth + 1
+    futures = []
+    for archive_path in archives:
+        futures.append(
+            executor.submit(
+                _extract_and_recurse,
+                archive_path,
+                password,
+                max_depth,
+                _current_depth,
+                executor,
+            )
         )
+
+    for fut in futures:
+        fut.result()
+
+    if own_exec:
+        executor.shutdown()
 
 def post_process():
     """
@@ -239,6 +263,12 @@ def post_process():
         logger.error(f"Splitter failed: {e}")
         cleanup_paths()
         return
+
+
+def post_process_async():
+    """Run post_process in a separate daemon thread."""
+    thread = threading.Thread(target=post_process, daemon=True)
+    thread.start()
 
 
 @app.task
@@ -294,7 +324,7 @@ def process_file(file_path, optional_msg):
         # Handle uncompressed text files
         if mime and mime.startswith('text'):
             logger.info("Uncompressed text detected, moving to post-process methods.")
-            post_process()
+            post_process_async()
             return
 
         # Archive handling
@@ -305,7 +335,7 @@ def process_file(file_path, optional_msg):
             if is_valid_password(dest, ""):
                 logger.info("Using no password worker, extracting the archive ...")
                 recursive_extract(EXTRACTION_PATH, None)
-                post_process()
+                post_process_async()
                 return
             logger.error("Using no password didn't work - file ignored.")
             cleanup_paths()
@@ -315,7 +345,7 @@ def process_file(file_path, optional_msg):
             if is_valid_password(dest, candidate):
                 logger.info(f"Found a valid password -> {candidate}")
                 recursive_extract(EXTRACTION_PATH, candidate)
-                post_process()
+                post_process_async()
                 return
         
         logger.error("All candidate passwords failed - file ignored.")

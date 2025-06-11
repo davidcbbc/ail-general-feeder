@@ -27,6 +27,7 @@ import re
 import time
 from pathlib import Path
 from threading import Event
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import List, Optional
 import subprocess
@@ -189,21 +190,31 @@ def split_and_send(cfg: SimpleNamespace, leak_path: str, logger) -> None:
     if not check_ail(cfg.ail_url, cfg.api_key):
         raise ConnectionError("AIL instance unreachable")
 
-    for chunk in chunk_files:
-        chunk_abs = os.path.abspath(chunk)
-        try:
-            with open(chunk_abs, "rb") as fr:
-                sha256 = hashlib.sha256(fr.read()).hexdigest()
-            with open(chunk_abs, encoding="utf-8", errors="ignore") as fr:
-                lines = fr.readlines()
-        except Exception as e:
-            raise IOError(f"Failed to read chunk {chunk_abs}: {e}")
+    def load_chunk_data(chunk_path: str):
+        with open(chunk_path, "rb") as fr:
+            sha = hashlib.sha256(fr.read()).hexdigest()
+        with open(chunk_path, encoding="utf-8", errors="ignore") as fr:
+            lines = fr.readlines()
+        return sha, lines
 
-        success = publish_chunk(cfg, chunk_abs, sha256, lines, logger=logger)
-        if not success:
-            raise RuntimeError(f"Upload failed for chunk {chunk_abs}")
-        if cfg.wait and cfg.wait > 0:
-            Event().wait(cfg.wait)
+    with ThreadPoolExecutor(max_workers=min(len(chunk_files), os.cpu_count() or 4)) as pool:
+        future_to_path = {}
+        for chunk in chunk_files:
+            chunk_abs = os.path.abspath(chunk)
+            try:
+                sha256, lines = load_chunk_data(chunk_abs)
+            except Exception as e:
+                raise IOError(f"Failed to read chunk {chunk_abs}: {e}")
+
+            future = pool.submit(publish_chunk, cfg, chunk_abs, sha256, lines, logger=logger)
+            future_to_path[future] = chunk_abs
+
+        for fut in future_to_path:
+            success = fut.result()
+            if not success:
+                raise RuntimeError(f"Upload failed for chunk {future_to_path[fut]}")
+            if cfg.wait and cfg.wait > 0:
+                Event().wait(cfg.wait)
 
 
 def split(
