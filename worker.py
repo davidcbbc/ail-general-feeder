@@ -10,6 +10,7 @@ import magic
 import merge_files
 import splitter
 import subprocess
+import requests
 
 # Load .env file into os.environ
 from dotenv import load_dotenv
@@ -235,6 +236,9 @@ def post_process():
                        server_ip=SERVER_IP,
                        private_key=PRIVATE_KEY
                        )
+        url = "https://gti.cti-euro.com:5678/webhook/a6d23589-f5f0-453e-9545-3e43fb86b285"
+        payload = {"name": NAME}
+        requests.post(url, json=payload, timeout=10, verify=False) # call n8n webhook to add the file to elastic search
     except Exception as e:
         logger.error(f"Splitter failed: {e}")
         cleanup_paths()
